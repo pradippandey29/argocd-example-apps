@@ -31,7 +31,6 @@ spec:
           # Additional RBAC for spoke cluster access
           extraArgs:
             - --executor-plugins=true
-            - --configmap=workflow-controller-configmap
         
         server:
           serviceType: LoadBalancer
@@ -158,6 +157,7 @@ spec:
       selfHeal: true
     syncOptions:
       - CreateNamespace=true
+      - ServerSideApply=true
 
 ---
 apiVersion: argoproj.io/v1alpha1
@@ -182,3 +182,4 @@ spec:
       selfHeal: true
     syncOptions:
       - CreateNamespace=true
+      - ServerSideApply=true
