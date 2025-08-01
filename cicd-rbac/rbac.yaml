@@ -1,0 +1,83 @@
+# RBAC Configuration for Cross-Cluster CI/CD
+# Enables Argo Workflows to deploy to spoke clusters
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cicd-workflow-executor
+  namespace: argo-workflows
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::961248554445:role/guestbook-app-argo-codebuild-role
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cicd-workflow-executor
+rules:
+# Workflow execution permissions
+- apiGroups: [""]
+  resources: ["pods", "pods/log", "pods/exec"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+- apiGroups: [""]
+  resources: ["secrets", "configmaps"]
+  verbs: ["get", "list", "watch", "create", "update", "patch"]
+# ArgoCD application management
+- apiGroups: ["argoproj.io"]
+  resources: ["applications", "applicationsets"]
+  verbs: ["get", "list", "watch", "create", "update", "patch"]
+# ECR and CodeBuild access
+- apiGroups: [""]
+  resources: ["serviceaccounts"]
+  verbs: ["get", "list", "impersonate"]
+# Cross-cluster secret access
+- apiGroups: [""]
+  resources: ["secrets"]
+  resourceNames: ["spoke-dev", "spoke-staging", "spoke-prod"]
+  verbs: ["get", "list"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: cicd-workflow-executor
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cicd-workflow-executor
+subjects:
+- kind: ServiceAccount
+  name: cicd-workflow-executor
+  namespace: argo-workflows
+- kind: ServiceAccount
+  name: argo-workflows-workflow-controller
+  namespace: argo-workflows
+
+---
+# Additional permissions for GitHub webhook processing
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: argo-events-webhook
+rules:
+- apiGroups: ["argoproj.io"]
+  resources: ["workflows"]
+  verbs: ["create", "get", "list", "watch"]
+- apiGroups: [""]
+  resources: ["events"]
+  verbs: ["create", "patch"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: argo-events-webhook
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: argo-events-webhook
+subjects:
+- kind: ServiceAccount
+  name: argo-events-controller-manager
+  namespace: argo-events
