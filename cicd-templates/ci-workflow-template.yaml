@@ -1,0 +1,278 @@
+# CI/CD Workflow Templates for Hub-Spoke Architecture
+# Templates for building, testing, and deploying to spoke clusters
+
+---
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: ci-build-deploy
+  namespace: argo-workflows
+spec:
+  entrypoint: ci-pipeline
+  serviceAccountName: cicd-workflow-executor
+  
+  arguments:
+    parameters:
+    - name: repo-url
+      value: "https://github.com/pradippandey29/argocd-example-apps"
+    - name: branch
+      value: "master"
+    - name: app-name
+      value: "guestbook-app"
+    - name: target-cluster
+      value: "dev"
+    - name: ecr-repo
+      value: "961248554445.dkr.ecr.us-west-2.amazonaws.com/guestbook-app"
+
+  templates:
+  - name: ci-pipeline
+    dag:
+      tasks:
+      - name: clone-repo
+        template: git-clone
+        arguments:
+          parameters:
+          - name: repo-url
+            value: "{{workflow.parameters.repo-url}}"
+          - name: branch
+            value: "{{workflow.parameters.branch}}"
+      
+      - name: build-image
+        template: docker-build
+        dependencies: [clone-repo]
+        arguments:
+          parameters:
+          - name: app-name
+            value: "{{workflow.parameters.app-name}}"
+          - name: ecr-repo
+            value: "{{workflow.parameters.ecr-repo}}"
+      
+      - name: deploy-to-spoke
+        template: deploy-app
+        dependencies: [build-image]
+        arguments:
+          parameters:
+          - name: target-cluster
+            value: "{{workflow.parameters.target-cluster}}"
+          - name: app-name
+            value: "{{workflow.parameters.app-name}}"
+          - name: image-tag
+            value: "{{tasks.build-image.outputs.parameters.image-tag}}"
+
+  - name: git-clone
+    inputs:
+      parameters:
+      - name: repo-url
+      - name: branch
+    container:
+      image: alpine/git:latest
+      command: [sh, -c]
+      args:
+      - |
+        git clone {{inputs.parameters.repo-url}} /workspace
+        cd /workspace
+        git checkout {{inputs.parameters.branch}}
+        echo "Repository cloned successfully"
+      volumeMounts:
+      - name: workspace
+        mountPath: /workspace
+    volumes:
+    - name: workspace
+      emptyDir: {}
+
+  - name: docker-build
+    inputs:
+      parameters:
+      - name: app-name
+      - name: ecr-repo
+    outputs:
+      parameters:
+      - name: image-tag
+        valueFrom:
+          path: /tmp/image-tag
+    container:
+      image: public.ecr.aws/aws-cli/aws-cli:latest
+      command: [sh, -c]
+      args:
+      - |
+        # Install docker
+        yum update -y
+        yum install -y docker
+        service docker start
+        
+        # Login to ECR
+        aws ecr get-login-password --region us-west-2 | docker login --username AWS --password-stdin {{inputs.parameters.ecr-repo}}
+        
+        # Build and push image
+        IMAGE_TAG=$(date +%Y%m%d-%H%M%S)-$(echo $RANDOM | md5sum | head -c 8)
+        cd /workspace
+        docker build -t {{inputs.parameters.ecr-repo}}:$IMAGE_TAG .
+        docker push {{inputs.parameters.ecr-repo}}:$IMAGE_TAG
+        
+        echo $IMAGE_TAG > /tmp/image-tag
+        echo "Image built and pushed: {{inputs.parameters.ecr-repo}}:$IMAGE_TAG"
+      volumeMounts:
+      - name: workspace
+        mountPath: /workspace
+      - name: docker-sock
+        mountPath: /var/run/docker.sock
+    volumes:
+    - name: workspace
+      emptyDir: {}
+    - name: docker-sock
+      hostPath:
+        path: /var/run/docker.sock
+
+  - name: deploy-app
+    inputs:
+      parameters:
+      - name: target-cluster
+      - name: app-name
+      - name: image-tag
+    container:
+      image: argoproj/argocd:latest
+      command: [sh, -c]
+      args:
+      - |
+        # Update application image in spoke cluster
+        kubectl patch application workload-{{inputs.parameters.target-cluster}} -n argocd --type merge -p '{
+          "spec": {
+            "source": {
+              "helm": {
+                "parameters": [
+                  {
+                    "name": "image.tag",
+                    "value": "{{inputs.parameters.image-tag}}"
+                  }
+                ]
+              }
+            }
+          }
+        }'
+        
+        # Sync the application
+        kubectl patch application workload-{{inputs.parameters.target-cluster}} -n argocd --type merge -p '{
+          "operation": {
+            "sync": {}
+          }
+        }'
+        
+        echo "Application deployed to {{inputs.parameters.target-cluster}} cluster"
+
+---
+apiVersion: argoproj.io/v1alpha1
+kind: ClusterWorkflowTemplate
+metadata:
+  name: github-webhook-trigger
+spec:
+  entrypoint: trigger-ci
+  serviceAccountName: cicd-workflow-executor
+  
+  arguments:
+    parameters:
+    - name: github-payload
+    - name: github-event
+
+  templates:
+  - name: trigger-ci
+    steps:
+    - - name: parse-webhook
+        template: parse-github-webhook
+        arguments:
+          parameters:
+          - name: payload
+            value: "{{workflow.parameters.github-payload}}"
+          - name: event
+            value: "{{workflow.parameters.github-event}}"
+    
+    - - name: trigger-build
+        template: submit-workflow
+        arguments:
+          parameters:
+          - name: repo-url
+            value: "{{steps.parse-webhook.outputs.parameters.repo-url}}"
+          - name: branch
+            value: "{{steps.parse-webhook.outputs.parameters.branch}}"
+          - name: target-cluster
+            value: "{{steps.parse-webhook.outputs.parameters.target-cluster}}"
+
+  - name: parse-github-webhook
+    inputs:
+      parameters:
+      - name: payload
+      - name: event
+    outputs:
+      parameters:
+      - name: repo-url
+        valueFrom:
+          path: /tmp/repo-url
+      - name: branch
+        valueFrom:
+          path: /tmp/branch
+      - name: target-cluster
+        valueFrom:
+          path: /tmp/target-cluster
+    script:
+      image: python:3.9-alpine
+      command: [python]
+      source: |
+        import json
+        import os
+        
+        payload = '''{{inputs.parameters.payload}}'''
+        event_type = "{{inputs.parameters.event}}"
+        
+        data = json.loads(payload)
+        
+        # Extract repository URL
+        repo_url = data.get('repository', {}).get('clone_url', '')
+        
+        # Extract branch
+        if event_type == 'push':
+            branch = data.get('ref', '').replace('refs/heads/', '')
+        else:
+            branch = 'master'
+        
+        # Determine target cluster based on branch
+        if branch == 'main' or branch == 'master':
+            target_cluster = 'prod'
+        elif branch == 'staging':
+            target_cluster = 'staging'
+        else:
+            target_cluster = 'dev'
+        
+        # Write outputs
+        with open('/tmp/repo-url', 'w') as f:
+            f.write(repo_url)
+        with open('/tmp/branch', 'w') as f:
+            f.write(branch)
+        with open('/tmp/target-cluster', 'w') as f:
+            f.write(target_cluster)
+        
+        print(f"Parsed webhook: repo={repo_url}, branch={branch}, cluster={target_cluster}")
+
+  - name: submit-workflow
+    inputs:
+      parameters:
+      - name: repo-url
+      - name: branch
+      - name: target-cluster
+    resource:
+      action: create
+      manifest: |
+        apiVersion: argoproj.io/v1alpha1
+        kind: Workflow
+        metadata:
+          generateName: ci-build-deploy-
+          namespace: argo-workflows
+        spec:
+          workflowTemplateRef:
+            name: ci-build-deploy
+          arguments:
+            parameters:
+            - name: repo-url
+              value: "{{inputs.parameters.repo-url}}"
+            - name: branch
+              value: "{{inputs.parameters.branch}}"
+            - name: target-cluster
+              value: "{{inputs.parameters.target-cluster}}"
