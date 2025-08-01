@@ -49,8 +49,9 @@ spec:
             type: LoadBalancer
             port: 80
             targetPort: 2746
+            nodePort: null
             annotations:
-              service.beta.kubernetes.io/aws-load-balancer-type: nlb
+              service.k8s.aws/load-balancer-type: "nlb"
               service.beta.kubernetes.io/aws-load-balancer-scheme: internet-facing
           
           ingress:
