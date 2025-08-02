@@ -1,0 +1,40 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: guestbook-prod
+  namespace: default
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: guestbook-prod
+  template:
+    metadata:
+      labels:
+        app: guestbook-prod
+    spec:
+      containers:
+      - name: guestbook
+        image: 961248554445.dkr.ecr.us-west-2.amazonaws.com/guestbook-app:v5
+        ports:
+        - containerPort: 80
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: guestbook-prod-svc
+  namespace: default
+spec:
+  selector:
+    app: guestbook-prod
+  ports:
+  - port: 80
+    targetPort: 80
+  type: LoadBalancer
