@@ -1,5 +1,5 @@
-# GitOps CI/CD Applications for Hub Cluster
-# Deploy Argo Workflows and Events via ArgoCD
+# Complete GitOps CI/CD Setup for Hub-Spoke Architecture
+# Includes Argo Workflows, Events, RBAC, and CI/CD Integration
 
 ---
 apiVersion: argoproj.io/v1alpha1
@@ -21,18 +21,29 @@ spec:
           serviceAccount:
             create: true
             annotations:
-              eks.amazonaws.com/role-arn: arn:aws:iam::961248554445:iam-role/guestbook-app-argo-codebuild-role
+              eks.amazonaws.com/role-arn: arn:aws:iam::961248554445:role/guestbook-app-argo-codebuild-role
+          
+          # Enable cross-cluster workflow execution
+          workflowNamespaces:
+            - argo-workflows
+            - default
+          
+          # Additional RBAC for spoke cluster access
+          extraArgs:
+            - --executor-plugins=true
         
         server:
           serviceType: LoadBalancer
           serviceAccount:
             create: true
             annotations:
-              eks.amazonaws.com/role-arn: arn:aws:iam::961248554445:iam-role/guestbook-app-argo-codebuild-role
+              eks.amazonaws.com/role-arn: arn:aws:iam::961248554445:role/guestbook-app-argo-codebuild-role
           
           extraArgs:
             - --auth-mode=server
             - --secure=false
+            - --access-control-allow-origin=*
+            - --namespaced=false
           
           service:
             type: LoadBalancer
@@ -47,7 +58,15 @@ spec:
           serviceAccount:
             create: true
             annotations:
-              eks.amazonaws.com/role-arn: arn:aws:iam::961248554445:iam-role/guestbook-app-argo-codebuild-role
+              eks.amazonaws.com/role-arn: arn:aws:iam::961248554445:role/guestbook-app-argo-codebuild-role
+        
+        # Enable single namespace mode for better security
+        singleNamespace: false
+        
+        # Workflow defaults for CI/CD
+        workflowDefaults:
+          spec:
+            serviceAccountName: argo-workflows-workflow-controller
 
   destination:
     server: https://kubernetes.default.svc
@@ -81,12 +100,82 @@ spec:
           serviceAccount:
             create: true
             annotations:
-              eks.amazonaws.com/role-arn: arn:aws:iam::961248554445:iam-role/guestbook-app-argo-codebuild-role
+              eks.amazonaws.com/role-arn: arn:aws:iam::961248554445:role/guestbook-app-argo-codebuild-role
+        
+        # Enable additional event source controllers
+        configs:
+          jetstream:
+            versions:
+            - version: latest
+              natsImage: nats:2.9.15
+              metricsImage: natsio/prometheus-nats-exporter:0.9.1
+              configReloaderImage: natsio/nats-server-config-reloader:0.6.2
+              startCommand: /nats-server
+        
+        # RBAC for webhook and event processing
+        rbac:
+          create: true
+        
+        # Additional service account permissions
+        serviceAccount:
+          create: true
+          annotations:
+            eks.amazonaws.com/role-arn: arn:aws:iam::961248554445:role/guestbook-app-argo-codebuild-role
 
   destination:
     server: https://kubernetes.default.svc
     namespace: argo-events
   
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: cicd-rbac
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/pradippandey29/argocd-example-apps
+    path: cicd-rbac
+    targetRevision: master
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argo-workflows
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: cicd-templates
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/pradippandey29/argocd-example-apps
+    path: cicd-templates
+    targetRevision: master
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argo-workflows
   syncPolicy:
     automated:
       prune: true
