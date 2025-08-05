@@ -6,7 +6,7 @@ replicaCount: 1
 
 image:
   repository: 961248554445.dkr.ecr.us-west-2.amazonaws.com/guestbook-app
-  tag: 921fc5c3225dfce378c0de9c96b7d5520848a704
+  tag: 60f54b749dac21a0c7b3fda7ddba2d0b70bd530b
   pullPolicy: IfNotPresent
 
 containerPort: 80
